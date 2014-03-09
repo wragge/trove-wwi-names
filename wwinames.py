@@ -5,6 +5,8 @@ import requests
 import time
 import credentials
 import logging
+import string
+from operator import itemgetter
 
 logging.basicConfig(filename='data/errors.txt', level=logging.ERROR,)
 
@@ -18,7 +20,7 @@ class FindNames:
 	f.find_names()
 
 	'''
-	csv_file = 'data/slsa_great_war.csv' # data file location
+	csv_file = 'data/slsa_great_war_2.csv' # data file location
 	title_id = '291' # Chronicle - limit searches to this paper
 	search_url = 'http://api.trove.nla.gov.au/result'
 	item_url = 'http://api.trove.nla.gov.au/newspaper/'
@@ -157,6 +159,7 @@ class FindNames:
 		'''
 		try:
 			r = requests.get(url, params=params)
+			print r.url
 		except requests.exceptions.RequestException as e:
 			results = None
 			with open('data/errors.txt', 'ab') as errors:
@@ -191,3 +194,107 @@ class FindNames:
 		else:
 			# Return datetime as ISO formatted string
 			return (date_obj.strftime('%Y-%m-%d'), pages)
+
+	def get_articles_by_title(self):
+		'''
+		Use a defined list of title phrases to get a list of articles
+		from Trove.
+		'''
+		title_phrases = [
+			'heroes of the great war they gave their lives for king and country',
+			'australian soldiers died for their country',
+			'casualty list south australia killed in action',
+			'on active service', 
+			'honoring soldiers', 
+			'military honors australians honored', 
+			'casualty lists south australian losses list killed in action', 
+			'australian soldiers died for his country', 
+			'died for their country', 
+			'australian soldiers died for the country', 
+			'australian soldiers died for their country photographs of soldiers', 
+			'quality lists south australian losses list killed in action', 
+			'list killed in action', 
+			'answered the call enlistments', 
+			'gallant south australians how they won their honors', 
+			'casualty list south australia died of wounds', 
+		]
+		articles = []
+		for phrase in title_phrases:
+			query = 'title:("{}") date:[1914 TO 1919]'.format(phrase)
+			harvested = 0
+			params = {
+				'q': query,
+				'zone': 'newspaper',
+				'key': credentials.TROVE_API_KEY,
+				'l-title': self.title_id,
+				'n': '100',
+				'encoding': 'json',
+				's': '0',
+				'sortby': 'dateasc',
+				'reclevel': 'full'
+			}
+			number = params['n']
+			# Page through the results set to harvest all results
+			while number == params['n']:
+				params['s'] = str(harvested)
+				results = self.get_results(id, self.search_url, params)
+				try:
+					number = results['response']['zone'][0]['records']['n']
+				except TypeError as e:
+					with open('data/title_errors.txt', 'ab') as errors:
+						errors.write('{} - {}\n'.format(id, e))
+					break
+				else:
+					if int(number) > 0:
+						articles.extend(results['response']['zone'][0]['records']['article'])
+					harvested = harvested + int(number)
+				time.sleep(1)
+		# Remove duplicates
+		articles = { article['id']:article for article in articles }.values()
+		# Sort by article title
+		articles = sorted(articles, key=itemgetter('heading'))
+		with open('data/articles.csv', 'ab') as titles_csv:
+			for article in articles:
+				titles_writer = csv.writer(titles_csv)
+				titles_writer.writerow([
+						article['id'],
+						article['heading'].encode('utf-8'),
+						article['title']['value'],
+						article['date'],
+						article['page'],
+						article['identifier'],
+						article['illustrated'],
+						article['wordCount'],
+						article['correctionCount']
+					])
+
+	def get_title_groups(self, limit=10):
+		'''
+		Try to extract common titles/phrases from a list of articles.
+		'''
+		titles = {}
+		articles_file = 'data/slsa_strong.csv'
+		with open(articles_file, 'rb') as infile:
+			reader = csv.reader(infile)
+			reader.next()
+			for row in reader:
+				title = row[3]
+				# Normalise titles
+				title = title.strip().lower()
+				# Remove punctuation
+				title = title.translate(string.maketrans("",""), string.punctuation)
+				# Remove multiple spaces
+				title = re.sub(r'\s+', ' ', title)
+				# Remove ordinals - 422nd etc
+				title = re.sub(r'\d+(rd|st|th|nd) ', '', title)
+				title = re.sub(r'no \d+ ', '', title)
+				try:
+					titles[title] += 1
+				except KeyError:
+					titles[title] = 1
+ 		#titles = sorted(titles.items(), key=itemgetter(1), reverse=True)
+ 		phrases = [title for title, count in titles if count >= limit]
+		print phrases
+		#for t in titles:
+		#	print '{}: {}'.format(t[0], t[1])			
+
